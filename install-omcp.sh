@@ -4,15 +4,28 @@ set -Eeuo pipefail
 REPO="https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main"
 APP="/opt/omcp"
 DATA="/var/lib/omcp"
+
+# Railway and similar container hosts provide PORT and route HTTP traffic to it.
+# In that mode, bind on all interfaces and do not depend on an outbound SSH tunnel.
+PLATFORM_PORT="${PORT:-}"
+if [[ -n "$PLATFORM_PORT" ]]; then
+  if ! [[ "$PLATFORM_PORT" =~ ^[0-9]+$ ]] || (( PLATFORM_PORT < 1 || PLATFORM_PORT > 65535 )); then
+    echo "Invalid platform PORT value: $PLATFORM_PORT"; exit 1
+  fi
+  PANEL_HOST="0.0.0.0"
+  PANEL_PORT="$PLATFORM_PORT"
+  PLATFORM_MODE=1
+else
+  PANEL_HOST="${OMCP_HOST:-127.0.0.1}"
+  PANEL_PORT="${OMCP_PORT:-8765}"
+  PLATFORM_MODE=0
+fi
 if [[ "${EUID}" -ne 0 ]]; then echo "Run with sudo/root: sudo bash install-omcp.sh"; exit 1; fi
 if ! command -v apt-get >/dev/null; then echo "Supported target: Ubuntu/Debian."; exit 1; fi
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-paramiko git curl ca-certificates openjdk-21-jre-headless openssh-client
 DEBIAN_FRONTEND=noninteractive apt-get install -y cpulimit >/dev/null 2>&1 || true
-# Install Java 25 when the configured Ubuntu/Debian repositories provide it; Java 21 remains the baseline.
-if apt-cache show openjdk-25-jre-headless >/dev/null 2>&1; then
-  DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-25-jre-headless
-fi
+# Keep Java 21 as the predictable baseline for current Minecraft server software.
 # Open the dedicated SFTP listener in UFW when UFW is already active. Cloud firewalls need a separate rule.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 2022/tcp || true; fi
 
@@ -20,6 +33,14 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
 id omcp >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --create-home --shell /usr/sbin/nologin omcp
 install -d -o root -g omcp -m 0750 "$APP"
 install -d -o omcp -g omcp -m 0750 "$DATA" "$DATA/servers" "$DATA/backups"
+cat >"$DATA/omcp.env" <<ENV
+OMCP_HOST=$PANEL_HOST
+OMCP_PORT=$PANEL_PORT
+OMCP_DATA=/var/lib/omcp
+OMCP_WEB=/opt/omcp/index.html
+ENV
+chown omcp:omcp "$DATA/omcp.env"
+chmod 0640 "$DATA/omcp.env"
 curl -fsSL "$REPO/agent/omcp_agent.py" -o "$APP/omcp_agent.py.new"
 curl -fsSL "$REPO/index.html" -o "$APP/index.html.new"
 # Publish only fully downloaded files.
@@ -72,10 +93,7 @@ Type=simple
 User=omcp
 Group=omcp
 WorkingDirectory=/opt/omcp
-Environment=OMCP_HOST=127.0.0.1
-Environment=OMCP_PORT=8765
-Environment=OMCP_DATA=/var/lib/omcp
-Environment=OMCP_WEB=/opt/omcp/index.html
+EnvironmentFile=/var/lib/omcp/omcp.env
 ExecStart=/usr/bin/python3 /opt/omcp/omcp_agent.py
 Restart=on-failure
 RestartSec=3
@@ -91,7 +109,12 @@ UNIT
   systemctl daemon-reload
   systemctl enable omcp
   if systemctl is-active --quiet omcp; then systemctl restart omcp; else systemctl start omcp; fi
-  cat >/etc/systemd/system/omcp-tunnel.service <<'TUNNEL'
+  systemctl daemon-reload
+  if [[ "$PLATFORM_MODE" == "1" ]]; then
+    systemctl disable --now omcp-tunnel.service 2>/dev/null || true
+    echo "Platform PORT detected; using the platform's HTTP ingress instead of tunnl.gg."
+  else
+    cat >/etc/systemd/system/omcp-tunnel.service <<'TUNNEL'
 [Unit]
 Description=OMCP stable HTTPS tunnel via tunnl.gg
 After=network-online.target omcp.service
@@ -112,8 +135,9 @@ UMask=0027
 [Install]
 WantedBy=multi-user.target
 TUNNEL
-  systemctl daemon-reload
-  systemctl enable --now omcp-tunnel.service
+    systemctl daemon-reload
+    systemctl enable --now omcp-tunnel.service
+  fi
   sleep 2
   echo "OMCP service status:"
   systemctl --no-pager --full status omcp || true
@@ -128,7 +152,7 @@ else
     for _ in {1..20}; do kill -0 "$old_pid" 2>/dev/null || break; sleep 0.25; done
   fi
   rm -f "$DATA/agent.pid"
-  runuser -u omcp -- sh -c 'nohup env OMCP_HOST=127.0.0.1 OMCP_PORT=8765 OMCP_DATA=/var/lib/omcp OMCP_WEB=/opt/omcp/index.html /usr/bin/python3 /opt/omcp/omcp_agent.py </dev/null >>/var/lib/omcp/agent.log 2>&1 & echo $! >/var/lib/omcp/agent.pid'
+  runuser -u omcp -- sh -c 'nohup env OMCP_HOST="$1" OMCP_PORT="$2" OMCP_DATA=/var/lib/omcp OMCP_WEB=/opt/omcp/index.html /usr/bin/python3 /opt/omcp/omcp_agent.py </dev/null >>/var/lib/omcp/agent.log 2>&1 & echo $! >/var/lib/omcp/agent.pid' sh "$PANEL_HOST" "$PANEL_PORT"
   sleep 2
   if [[ -f "$DATA/agent.pid" ]] && kill -0 "$(cat "$DATA/agent.pid")" 2>/dev/null; then
     echo "OMCP background process started (PID $(cat "$DATA/agent.pid"))."
@@ -138,19 +162,28 @@ else
     exit 1
   fi
   echo "First-run Admin setup / startup log: sudo cat $DATA/agent.log"
-  if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then
-    kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true
+  if [[ "$PLATFORM_MODE" == "1" ]]; then
+    if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true; fi
+    echo "Platform PORT detected; skipping tunnl.gg. Use the platform-generated HTTPS domain."
+  else
+    if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then
+      kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true
+    fi
+    runuser -u omcp -- sh -c 'nohup /opt/omcp/run-tunnel.sh </dev/null >/dev/null 2>&1 & echo $! >/var/lib/omcp/tunnel.pid'
+    sleep 3
+    echo "tunnl.gg URL/log: sudo tail -n 40 $DATA/tunnl.log"
+    echo "Stop this no-systemd tunnel: sudo kill \$(cat $DATA/tunnel.pid)"
   fi
-  runuser -u omcp -- sh -c 'nohup /opt/omcp/run-tunnel.sh </dev/null >/dev/null 2>&1 & echo $! >/var/lib/omcp/tunnel.pid'
-  sleep 3
-  echo "tunnl.gg URL/log: sudo tail -n 40 $DATA/tunnl.log"
-  echo "Stop this no-systemd tunnel: sudo kill \$(cat $DATA/tunnel.pid)"
   echo "Stop this no-systemd panel: sudo kill \$(cat $DATA/agent.pid)"
 fi
 echo
-echo "OMCP panel listener: http://127.0.0.1:8765"
-echo "Panel is bound to localhost. tunnl.gg HTTPS tunnel reconnects automatically using a persistent SSH identity."
-echo "OpenJDK 21 was installed. Verify with: java -version"
-echo "Cloud Shell sessions are temporary; processes and files may be lost when the session ends."
-echo "Free tunnl.gg links have a 2-hour idle timeout and a 24-hour maximum session; automatic reconnect reuses the same SSH-key URL." 
-echo "This tunnel is for the panel's HTTPS URL only; Minecraft servers still need a separate TCP relay."
+echo "OMCP panel listener: http://$PANEL_HOST:$PANEL_PORT"
+if [[ "$PLATFORM_MODE" == "1" ]]; then
+  echo "Platform mode is active: open the HTTPS domain assigned to this service on port $PANEL_PORT."
+  echo "The host must keep this container/process running and preserve /var/lib/omcp for persistent server data."
+else
+  echo "Panel is bound to localhost. tunnl.gg HTTPS tunnel reconnects automatically using a persistent SSH identity."
+  echo "Free tunnl.gg links have a 2-hour idle timeout and a 24-hour maximum session."
+fi
+echo "OpenJDK 21 is installed. Verify with: java -version"
+echo "Minecraft server traffic still needs a separate TCP route/relay; the panel's HTTPS domain does not carry Minecraft TCP."
