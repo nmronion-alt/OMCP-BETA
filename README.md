@@ -22,12 +22,24 @@
 Run this **single command** on a fresh Ubuntu/Debian VPS with `sudo` access:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && sudo bash /tmp/omcp.sh && for i in $(seq 1 60); do u=$(sudo grep -Eo 'https://[A-Za-z0-9.-]+\.tunnl\.gg' /var/lib/omcp/tunnl.log 2>/dev/null | tail -n 1 || true); [ -n "$u" ] && { echo "OMCP PANEL: $u"; exit 0; }; sleep 2; done; echo "Tunnel pending — check /var/lib/omcp/tunnl.log"
+curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && sudo bash /tmp/omcp.sh && for i in $(seq 1 60); do u=$(sudo grep -Eo 'https://[A-Za-z0-9.-]+\\.tunnl\\.gg' /var/lib/omcp/tunnl.log 2>/dev/null | tail -n 1 || true); [ -n "$u" ] && { echo "OMCP PANEL: $u"; exit 0; }; sleep 2; done; echo "Tunnel pending — check /var/lib/omcp/tunnl.log"
 ```
 
 The installer sets up OMCP and starts its panel tunnel. When the tunnel connects, the command prints the **Panel Link** in your terminal. Open that link in your browser.
 
 > **Note:** This installer targets Ubuntu/Debian systems. Use a persistent VPS for a panel that should stay online. Temporary cloud-shell sessions can stop or lose their files when the session ends.
+
+## 🗃️ OMCP Panel Main backup
+
+The Library backup is intended to be stored at `backups/OMCP-PANEL-main.zip`. Follow **[BACKUP.md](BACKUP.md)** to add the ZIP from your computer and verify it. The repository includes a verification script and a GitHub Actions check; the backup is not considered uploaded until the file exists on the `main` branch.
+
+Quick verification after upload:
+
+```bash
+bash scripts/verify-library-backup.sh backups/OMCP-PANEL-main.zip
+git ls-tree -r --long origin/main backups/OMCP-PANEL-main.zip
+curl -fIL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/backups/OMCP-PANEL-main.zip
+```
 
 ## ✨ What is OMCP?
 
@@ -96,6 +108,8 @@ The installer installs the runtime components it needs, including Java 21 where 
 - `index.html` — OMCP web dashboard
 - `install-omcp.sh` — installer
 - `docs/ARCHITECTURE.md` — architecture and security notes
+- `BACKUP.md` — Library backup upload and verification
+- `scripts/verify-library-backup.sh` — ZIP integrity/content check
 
 ## 💬 Community & updates
 
