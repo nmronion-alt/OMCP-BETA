@@ -1,0 +1,31 @@
+name: Verify OMCP Library Backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backups/OMCP-PANEL-main.zip"
+      - "scripts/verify-library-backup.sh"
+      - ".github/workflows/verify-library-backup.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check verification script syntax
+        run: bash -n scripts/verify-library-backup.sh
+
+      - name: Verify backup archive
+        run: |
+          if [[ ! -f backups/OMCP-PANEL-main.zip ]]; then
+            echo "::notice::Backup ZIP has not been uploaded yet. Follow BACKUP.md."
+            exit 0
+          fi
+          bash scripts/verify-library-backup.sh backups/OMCP-PANEL-main.zip
