@@ -142,7 +142,11 @@ TUNNEL
   echo "OMCP service status:"
   systemctl --no-pager --full status omcp || true
   echo "First-run Admin setup: sudo journalctl -u omcp -n 80 --no-pager"
-  echo "Tunnel URL/log: sudo tail -n 40 /var/lib/omcp/tunnl.log"
+  if [[ "$PLATFORM_MODE" == "1" ]]; then
+    echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
+  else
+    echo "Tunnel URL/log: sudo tail -n 40 /var/lib/omcp/tunnl.log"
+  fi
 else
   echo "systemd is not usable (state: ${SYSTEMD_STATE:-unavailable}); using background-process mode."
   if [[ -f "$DATA/agent.pid" ]] && kill -0 "$(cat "$DATA/agent.pid")" 2>/dev/null; then
