@@ -19,15 +19,15 @@
 
 ## ⚡ Install OMCP
 
-Run this **single command** on a fresh Ubuntu/Debian VPS with `sudo` access:
+Run this command on a fresh Ubuntu/Debian Linux host with root or `sudo` access:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && sudo bash /tmp/omcp.sh && for i in $(seq 1 60); do u=$(sudo grep -Eo 'https://[A-Za-z0-9.-]+\.tunnl\.gg' /var/lib/omcp/tunnl.log 2>/dev/null | tail -n 1 || true); [ -n "$u" ] && { echo "OMCP PANEL: $u"; exit 0; }; sleep 2; done; echo "Tunnel pending — check /var/lib/omcp/tunnl.log"
+curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && if [ "$(id -u)" -eq 0 ]; then bash /tmp/omcp.sh; else sudo bash /tmp/omcp.sh; fi
 ```
 
-The installer sets up OMCP and starts its panel tunnel. When the tunnel connects, the command prints the **Panel Link** in your terminal. Open that link in your browser.
+The installer detects whether the host provides a platform `PORT` (for example, Railway). If it does, OMCP binds to `0.0.0.0:$PORT` and skips the outbound tunnl.gg dependency; open the HTTPS domain assigned by that platform. On a normal VPS without `PORT`, OMCP stays on localhost and uses tunnl.gg for the browser panel link.
 
-> **Note:** This installer targets Ubuntu/Debian systems. Use a persistent VPS for a panel that should stay online. Temporary cloud-shell sessions can stop or lose their files when the session ends.
+> **Compatibility:** The installer currently targets Debian/Ubuntu with `apt-get` and root access. It supports hosts without systemd, but a host must allow long-running processes, provide persistent storage for `/var/lib/omcp`, and permit the required outbound downloads. A platform's generated web domain exposes only the panel's HTTP(S) traffic; Minecraft player connections still need a separate TCP relay. Temporary or sleep-prone free tiers may stop the panel or server.
 
 ## ✨ What is OMCP?
 
@@ -50,7 +50,7 @@ OMCP Agent on your VPS
     └── Backups & Network Routing
 ```
 
-The management API listens on `127.0.0.1:8765` by default. The installer provides the panel's remote HTTPS link through its tunnel.
+The management API listens on `127.0.0.1:8765` by default on ordinary VPS installs. On platforms that provide `PORT`, it binds to `0.0.0.0:$PORT` so the platform's HTTP ingress can reach it.
 
 ## 🚀 Features
 
@@ -74,8 +74,9 @@ Feature availability depends on the selected Minecraft software, version, host e
 
 ## 🧰 Requirements
 
-- Ubuntu or Debian Linux VPS
+- Debian or Ubuntu Linux host/container (`apt-get`)
 - Root or `sudo` access
+- A platform-provided `PORT` for direct platform ingress, or outbound SSH access for the optional tunnl.gg panel tunnel
 - Internet connection for installation and downloads
 - A persistent host for long-running use
 
@@ -83,8 +84,8 @@ The installer installs the runtime components it needs, including Java 21 where 
 
 ## 🔒 Security & networking
 
-- The OMCP management API binds to localhost (`127.0.0.1:8765`) by default.
-- Do not expose the management API directly to the public internet.
+- On a normal VPS, the OMCP management API binds to localhost (`127.0.0.1:8765`) and is published through its HTTPS tunnel.
+- On a platform with an assigned `PORT`, OMCP binds to `0.0.0.0:$PORT`; protect the platform domain with the application's login and the platform's access controls.
 - Keep your admin credentials private and use a trusted HTTPS access method.
 - Minecraft Java player traffic uses a separate TCP route/relay; a web HTTPS tunnel alone does not carry Minecraft TCP connections.
 - Local backups stay on the VPS. They are not off-site and can be lost if the host is lost.
