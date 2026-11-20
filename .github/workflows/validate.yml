@@ -19,6 +19,8 @@ jobs:
           node-version: "22"
       - name: Compile Python agent
         run: python -m py_compile agent/omcp_agent.py
+      - name: Validate installer shell syntax
+        run: bash -n install-omcp.sh
       - name: Extract and check panel JavaScript
         run: |
           python - <<'PY'
