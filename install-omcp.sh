@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 # OMCP installer for Ubuntu/Debian. Supports systemd VPS and no-systemd shells.
-REPO="https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/fix/beta-cloudshell-create"
+REPO="https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main"
 APP="/opt/omcp"
 DATA="/var/lib/omcp"
 
