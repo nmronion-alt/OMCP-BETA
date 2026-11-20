@@ -555,23 +555,55 @@ def create(d):
         shutil.rmtree(folder,ignore_errors=True)
         raise
 
+def _omcp_fetch_json(url, headers, timeout=30):
+    try:
+        req=urllib.request.Request(url,headers=headers)
+        with urllib.request.urlopen(req,timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail=""
+        try: detail=exc.read(1200).decode("utf-8","replace")
+        except Exception: pass
+        raise ValueError("Software API HTTP "+str(exc.code)+" for "+url.split("?")[0]+((": "+detail[:500]) if detail else ""))
+    except urllib.error.URLError as exc:
+        raise ValueError("Cannot reach software API "+url.split("/")[2]+": "+str(getattr(exc,"reason",exc)))
+    except (TimeoutError, socket.timeout):
+        raise ValueError("Timed out contacting software API "+url.split("/")[2])
+
+def _omcp_download(url, destination, headers, timeout=240):
+    try:
+        req=urllib.request.Request(url,headers={"User-Agent":headers["User-Agent"]})
+        with urllib.request.urlopen(req,timeout=timeout) as response, destination.open("wb") as out:
+            shutil.copyfileobj(response,out)
+    except urllib.error.HTTPError as exc:
+        destination.unlink(missing_ok=True)
+        raise ValueError("Server JAR download HTTP "+str(exc.code)+" from "+url.split("/")[2])
+    except urllib.error.URLError as exc:
+        destination.unlink(missing_ok=True)
+        raise ValueError("JAR download failed from "+url.split("/")[2]+": "+str(getattr(exc,"reason",exc)))
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
 def download_server_jar(software, ver, destination):
     headers={'User-Agent':'OMCP/0.5 (https://github.com/nmronion-alt/OMCP-PANEL)','Accept':'application/json'}
     if software in ('paper','folia','velocity','waterfall'):
-        api='https://fill.papermc.io/v3/projects/'+software+'/versions/'+ver+'/builds?channel=STABLE&limit=1'
-        with urllib.request.urlopen(urllib.request.Request(api,headers=headers),timeout=30) as r: builds=json.load(r)
+        api='https://fill.papermc.io/v3/projects/'+software+'/versions/'+ver+'/builds'
+        builds=_omcp_fetch_json(api,headers,45)
+        if isinstance(builds,dict): builds=[builds]
         stable=next((x for x in builds if x.get('channel')=='STABLE' and x.get('downloads',{}).get('server:default',{}).get('url')),None)
-        if not stable: raise ValueError('No stable '+software.title()+' build found for Minecraft '+ver)
-        url=stable['downloads']['server:default']['url']
+        if not stable: raise ValueError('No stable '+software.title()+' build is published for Minecraft '+ver)
+        download=stable['downloads']['server:default']; url=download['url']
+        expected_sha256=str(download.get('checksums',{}).get('sha256','')).lower()
     elif software=='purpur':
         api='https://api.purpurmc.org/v2/purpur/'+ver
-        with urllib.request.urlopen(urllib.request.Request(api,headers=headers),timeout=30) as r: info=json.load(r)
+        info=_omcp_fetch_json(api,headers,45)
         builds=info.get('builds',{}).get('all',[])
         if not builds: raise ValueError('No Purpur builds found for Minecraft '+ver)
         url='https://api.purpurmc.org/v2/purpur/'+ver+'/'+str(builds[-1])+'/download'
     elif software=='fabric':
-        with urllib.request.urlopen(urllib.request.Request('https://meta.fabricmc.net/v2/versions/loader/'+ver,headers=headers),timeout=30) as r: loaders=json.load(r)
-        with urllib.request.urlopen(urllib.request.Request('https://meta.fabricmc.net/v2/versions/installer',headers=headers),timeout=30) as r: installers=json.load(r)
+        loaders=_omcp_fetch_json('https://meta.fabricmc.net/v2/versions/loader/'+ver,headers,45)
+        installers=_omcp_fetch_json('https://meta.fabricmc.net/v2/versions/installer',headers,45)
         loader=next((x['loader']['version'] for x in loaders if x.get('loader',{}).get('stable')),None)
         installer=next((x['version'] for x in installers if x.get('stable')),None)
         if not loader or not installer: raise ValueError('No stable Fabric loader found for '+ver)
@@ -590,18 +622,22 @@ def download_server_jar(software, ver, destination):
             shutil.copy2(built,destination)
         finally: shutil.rmtree(build_dir,ignore_errors=True)
     elif software=='vanilla':
-        with urllib.request.urlopen(urllib.request.Request('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',headers=headers),timeout=30) as r: manifest=json.load(r)
+        manifest=_omcp_fetch_json('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',headers,45)
         item=next((x for x in manifest['versions'] if x['id']==ver and x['type']=='release'),None)
         if not item: raise ValueError('No official Vanilla release found for '+ver)
-        with urllib.request.urlopen(urllib.request.Request(item['url'],headers=headers),timeout=30) as r: meta=json.load(r)
+        meta=_omcp_fetch_json(item['url'],headers,45)
         url=meta.get('downloads',{}).get('server',{}).get('url')
         if not url: raise ValueError('No official Vanilla server download for '+ver)
     else: raise ValueError('Unsupported server software')
-    req=urllib.request.Request(url,headers={'User-Agent':headers['User-Agent']})
-    with urllib.request.urlopen(req,timeout=240) as r, destination.open('wb') as out: shutil.copyfileobj(r,out)
+    _omcp_download(url,destination,headers,300)
     if destination.stat().st_size<100000 or not zipfile.is_zipfile(destination):
         destination.unlink(missing_ok=True)
-        raise ValueError('Downloaded server software failed JAR validation')
+        raise ValueError('Downloaded server software failed JAR validation: response was not a valid JAR/ZIP file')
+    if software in ('paper','folia','velocity','waterfall') and expected_sha256:
+        digest=hashlib.sha256(destination.read_bytes()).hexdigest()
+        if digest!=expected_sha256:
+            destination.unlink(missing_ok=True)
+            raise ValueError('Server JAR SHA-256 verification failed; retry the installation.')
 
 VERSION_CACHE={}
 def software_versions(software):
@@ -611,16 +647,16 @@ def software_versions(software):
     if cached and time.time()-cached[0]<300: return cached[1]
     headers={'User-Agent':'OMCP/0.5 (https://github.com/nmronion-alt/OMCP-PANEL)','Accept':'application/json'}
     if software in ('paper','folia','velocity','waterfall'):
-        with urllib.request.urlopen(urllib.request.Request('https://fill.papermc.io/v3/projects/'+software,headers=headers),timeout=30) as r: data=json.load(r)
+        data=_omcp_fetch_json('https://fill.papermc.io/v3/projects/'+software,headers,45)
         versions=[v for group in data.get('versions',{}).values() for v in group]
     elif software=='purpur':
-        with urllib.request.urlopen(urllib.request.Request('https://api.purpurmc.org/v2/purpur',headers=headers),timeout=30) as r: data=json.load(r)
+        data=_omcp_fetch_json('https://api.purpurmc.org/v2/purpur',headers,45)
         versions=data.get('versions',[])
     elif software=='fabric':
-        with urllib.request.urlopen(urllib.request.Request('https://meta.fabricmc.net/v2/versions/game',headers=headers),timeout=30) as r: data=json.load(r)
+        data=_omcp_fetch_json('https://meta.fabricmc.net/v2/versions/game',headers,45)
         versions=[x['version'] for x in data if x.get('stable')]
     else:
-        with urllib.request.urlopen(urllib.request.Request('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',headers=headers),timeout=30) as r: data=json.load(r)
+        data=_omcp_fetch_json('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',headers,45)
         versions=[x['id'] for x in data.get('versions',[]) if x.get('type')=='release']
     versions=sorted(set(str(v) for v in versions),key=lambda v:tuple(int(x) for x in re.findall(r'\d+',v)),reverse=True)
     VERSION_CACHE[software]=(time.time(),versions)
