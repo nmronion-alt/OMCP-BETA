@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 # OMCP installer for Ubuntu/Debian. Supports systemd VPS and no-systemd shells.
-REPO="https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main"
+REPO="https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/fix/beta-fetch-console-tunnel"
 APP="/opt/omcp"
 DATA="/var/lib/omcp"
 
@@ -37,6 +37,24 @@ curl -fL --retry 3 --retry-all-errors "https://github.com/cloudflare/cloudflared
 chmod 0755 /usr/local/bin/cloudflared.new
 /usr/local/bin/cloudflared.new --version >/dev/null
 mv /usr/local/bin/cloudflared.new /usr/local/bin/cloudflared
+cat >"$APP/omcp-tunnel.sh" <<'TUNNEL'
+#!/usr/bin/env bash
+set -u
+PORT="${1:-8765}"
+LOG="${2:-/var/lib/omcp/tunnel.log}"
+while true; do
+  echo "[$(date -Is)] Trying Cloudflare Quick Tunnel" >>"$LOG"
+  /usr/local/bin/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$PORT" >>"$LOG" 2>&1 || true
+  echo "[$(date -Is)] Trying localhost.run fallback" >>"$LOG"
+  timeout 90 ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -R "80:127.0.0.1:$PORT" nokey@localhost.run >>"$LOG" 2>&1 || true
+  echo "[$(date -Is)] Trying Pinggy fallback" >>"$LOG"
+  timeout 90 ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -p 443 -R "0:127.0.0.1:$PORT" a.pinggy.io >>"$LOG" 2>&1 || true
+  echo "[$(date -Is)] Tunnel providers cycled; retrying in 8 seconds" >>"$LOG"
+  sleep 8
+done
+TUNNEL
+chmod 0755 "$APP/omcp-tunnel.sh"
+chown root:omcp "$APP/omcp-tunnel.sh"
 # Keep Java 21 as the predictable baseline for current Minecraft server software.
 # Open the dedicated SFTP listener in UFW when UFW is already active. Cloud firewalls need a separate rule.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 2022/tcp || true; fi
@@ -63,7 +81,7 @@ python3 -m py_compile "$APP/omcp_agent.py"
 chown root:omcp "$APP/omcp_agent.py" "$APP/index.html"
 chmod 0640 "$APP/omcp_agent.py" "$APP/index.html"
 
-legacy tunnel blockSYSTEMD_STATE=""
+SYSTEMD_STATE=""
 SYSTEMD_OK=0
 if command -v systemctl >/dev/null 2>&1; then
   SYSTEMD_STATE="$(systemctl is-system-running 2>/dev/null || true)"
@@ -115,7 +133,7 @@ Wants=network-online.target
 Type=simple
 User=omcp
 Group=omcp
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:$PANEL_PORT
+ExecStart=/opt/omcp/omcp-tunnel.sh $PANEL_PORT /var/lib/omcp/tunnel.log
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -138,7 +156,7 @@ UNIT
     echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
   else
     sleep 5
-    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | tail -n 1 || true)"
+    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[^[:space:]]+' | tail -n 1 || true)"
     if [[ -n "$PANEL_URL" ]]; then echo "OMCP PANEL URL: $PANEL_URL"; else echo "Tunnel is still connecting. Check: sudo journalctl -u omcp-tunnel -n 80 --no-pager"; fi
   fi
 else
@@ -167,9 +185,9 @@ else
     if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then
       kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true
     fi
-    runuser -u omcp -- sh -c 'nohup /usr/local/bin/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$1" </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
+    runuser -u omcp -- sh -c 'nohup /opt/omcp/omcp-tunnel.sh "$1" /var/lib/omcp/tunnel.log </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
     PANEL_URL=""
-    for _ in {1..30}; do
+    for _ in {1..60}; do
       PANEL_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
       [[ -n "$PANEL_URL" ]] && break
       sleep 2
@@ -185,8 +203,8 @@ if [[ "$PLATFORM_MODE" == "1" ]]; then
   echo "Platform mode is active: open the HTTPS domain assigned to this service on port $PANEL_PORT."
   echo "The host must keep this container/process running and preserve /var/lib/omcp for persistent server data."
 else
-  echo "Panel is bound to localhost. Cloudflare Quick Tunnel publishes a temporary HTTPS URL."
-  echo "The URL changes when the tunnel is recreated; use a named Cloudflare Tunnel for a permanent hostname."
+  echo "Panel is bound to localhost. Tunnel runner tries Cloudflare, localhost.run, then Pinggy."
+  echo "Tunnel URLs are temporary and may change after reconnecting."
 fi
 echo "OpenJDK 21 is installed. Verify with: java -version"
 echo "Minecraft server traffic still needs a separate TCP route/relay; the panel's HTTPS domain does not carry Minecraft TCP."
