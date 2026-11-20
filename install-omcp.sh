@@ -158,7 +158,7 @@ UNIT
     echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
   else
     for _ in {1..45}; do
-      PANEL_URL="$(journalctl -u omcp-tunnel -n 200 --no-pager 2>/dev/null | grep -Eo 'https://[A-Za-z0-9._-]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
+      PANEL_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' "$DATA/tunnel.log" 2>/dev/null | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
       [[ -n "$PANEL_URL" ]] && break
       sleep 2
     done
