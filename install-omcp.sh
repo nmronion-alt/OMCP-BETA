@@ -25,6 +25,18 @@ if ! command -v apt-get >/dev/null; then echo "Supported target: Ubuntu/Debian."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-paramiko git curl ca-certificates openjdk-21-jre-headless openssh-client
 DEBIAN_FRONTEND=noninteractive apt-get install -y cpulimit >/dev/null 2>&1 || true
+
+# Cloudflare Quick Tunnel provides a browser-ready HTTPS URL without a token.
+ARCH="$(dpkg --print-architecture)"
+case "$ARCH" in
+  amd64) CF_ARCH="amd64" ;;
+  arm64) CF_ARCH="arm64" ;;
+  *) echo "Unsupported CPU architecture for cloudflared: $ARCH"; exit 1 ;;
+esac
+curl -fL --retry 3 --retry-all-errors "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$CF_ARCH" -o /usr/local/bin/cloudflared.new
+chmod 0755 /usr/local/bin/cloudflared.new
+/usr/local/bin/cloudflared.new --version >/dev/null
+mv /usr/local/bin/cloudflared.new /usr/local/bin/cloudflared
 # Keep Java 21 as the predictable baseline for current Minecraft server software.
 # Open the dedicated SFTP listener in UFW when UFW is already active. Cloud firewalls need a separate rule.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 2022/tcp || true; fi
@@ -51,27 +63,7 @@ python3 -m py_compile "$APP/omcp_agent.py"
 chown root:omcp "$APP/omcp_agent.py" "$APP/index.html"
 chmod 0640 "$APP/omcp_agent.py" "$APP/index.html"
 
-# Keep one SSH identity so tunnl.gg can return the same free stable URL after reconnects.
-install -d -o omcp -g omcp -m 0700 "$DATA/.ssh"
-if [[ ! -s "$DATA/.ssh/id_ed25519" ]]; then
-  runuser -u omcp -- ssh-keygen -q -t ed25519 -N "" -f "$DATA/.ssh/id_ed25519"
-fi
-cat >"$APP/run-tunnel.sh" <<'TUNNEL'
-#!/usr/bin/env bash
-set +e
-while true; do
-  /usr/bin/ssh -i /var/lib/omcp/.ssh/id_ed25519 \
-    -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes -t -R 80:localhost:8765 \
-    stable@proxy.tunnl.gg 2>&1 | /usr/bin/tee -a /var/lib/omcp/tunnl.log
-  sleep 5
-done
-TUNNEL
-chmod 0750 "$APP/run-tunnel.sh"
-chown root:omcp "$APP/run-tunnel.sh"
-
-SYSTEMD_STATE=""
+legacy tunnel blockSYSTEMD_STATE=""
 SYSTEMD_OK=0
 if command -v systemctl >/dev/null 2>&1; then
   SYSTEMD_STATE="$(systemctl is-system-running 2>/dev/null || true)"
@@ -114,18 +106,18 @@ UNIT
     systemctl disable --now omcp-tunnel.service 2>/dev/null || true
     echo "Platform PORT detected; using the platform's HTTP ingress instead of tunnl.gg."
   else
-    cat >/etc/systemd/system/omcp-tunnel.service <<'TUNNEL'
+    cat >/etc/systemd/system/omcp-tunnel.service <<UNIT
 [Unit]
-Description=OMCP stable HTTPS tunnel via tunnl.gg
+Description=OMCP HTTPS Quick Tunnel
 After=network-online.target omcp.service
 Wants=network-online.target
 [Service]
 Type=simple
 User=omcp
 Group=omcp
-ExecStart=/opt/omcp/run-tunnel.sh
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:$PANEL_PORT
 Restart=always
-RestartSec=3
+RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -134,7 +126,7 @@ ReadWritePaths=/var/lib/omcp
 UMask=0027
 [Install]
 WantedBy=multi-user.target
-TUNNEL
+UNIT
     systemctl daemon-reload
     systemctl enable --now omcp-tunnel.service
   fi
@@ -145,7 +137,9 @@ TUNNEL
   if [[ "$PLATFORM_MODE" == "1" ]]; then
     echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
   else
-    echo "Tunnel URL/log: sudo tail -n 40 /var/lib/omcp/tunnl.log"
+    sleep 5
+    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | tail -n 1 || true)"
+    if [[ -n "$PANEL_URL" ]]; then echo "OMCP PANEL URL: $PANEL_URL"; else echo "Tunnel is still connecting. Check: sudo journalctl -u omcp-tunnel -n 80 --no-pager"; fi
   fi
 else
   echo "systemd is not usable (state: ${SYSTEMD_STATE:-unavailable}); using background-process mode."
@@ -168,14 +162,19 @@ else
   echo "First-run Admin setup / startup log: sudo cat $DATA/agent.log"
   if [[ "$PLATFORM_MODE" == "1" ]]; then
     if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true; fi
-    echo "Platform PORT detected; skipping tunnl.gg. Use the platform-generated HTTPS domain."
+    echo "Platform PORT detected; skipping Quick Tunnel. Use the platform-generated HTTPS domain."
   else
     if [[ -f "$DATA/tunnel.pid" ]] && kill -0 "$(cat "$DATA/tunnel.pid")" 2>/dev/null; then
       kill "$(cat "$DATA/tunnel.pid")" 2>/dev/null || true
     fi
-    runuser -u omcp -- sh -c 'nohup /opt/omcp/run-tunnel.sh </dev/null >/dev/null 2>&1 & echo $! >/var/lib/omcp/tunnel.pid'
-    sleep 3
-    echo "tunnl.gg URL/log: sudo tail -n 40 $DATA/tunnl.log"
+    runuser -u omcp -- sh -c 'nohup /usr/local/bin/cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$1" </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
+    PANEL_URL=""
+    for _ in {1..30}; do
+      PANEL_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
+      [[ -n "$PANEL_URL" ]] && break
+      sleep 2
+    done
+    if [[ -n "$PANEL_URL" ]]; then echo "OMCP PANEL URL: $PANEL_URL"; else echo "Tunnel is still connecting. Check: sudo tail -n 60 $DATA/tunnel.log"; fi
     echo "Stop this no-systemd tunnel: sudo kill \$(cat $DATA/tunnel.pid)"
   fi
   echo "Stop this no-systemd panel: sudo kill \$(cat $DATA/agent.pid)"
@@ -186,8 +185,8 @@ if [[ "$PLATFORM_MODE" == "1" ]]; then
   echo "Platform mode is active: open the HTTPS domain assigned to this service on port $PANEL_PORT."
   echo "The host must keep this container/process running and preserve /var/lib/omcp for persistent server data."
 else
-  echo "Panel is bound to localhost. tunnl.gg HTTPS tunnel reconnects automatically using a persistent SSH identity."
-  echo "Free tunnl.gg links have a 2-hour idle timeout and a 24-hour maximum session."
+  echo "Panel is bound to localhost. Cloudflare Quick Tunnel publishes a temporary HTTPS URL."
+  echo "The URL changes when the tunnel is recreated; use a named Cloudflare Tunnel for a permanent hostname."
 fi
 echo "OpenJDK 21 is installed. Verify with: java -version"
 echo "Minecraft server traffic still needs a separate TCP route/relay; the panel's HTTPS domain does not carry Minecraft TCP."
