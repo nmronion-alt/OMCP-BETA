@@ -19,6 +19,7 @@ SESSION_LOCK=threading.RLock()
 SESSION_TTL=12*60*60
 PROCS={}; LOCK=threading.RLock()
 TUNNELS={}; TUNNEL_LOCK=threading.RLock(); SFTP_TUNNELS={}; METRIC_PREV={}; MINEKUBE_STATE={}
+CREATION_JOBS={}; CREATION_JOBS_LOCK=threading.RLock()
 
 def load_users():
     if not USERSFILE.exists(): return {}
@@ -532,7 +533,8 @@ def physical_ram_gb():
     except Exception: pass
     return 1
 
-def create(d):
+def create(d, progress=None):
+    if progress: progress("Validating server settings…")
     name=str(d.get('name','')).strip(); ver=str(d.get('version','')).strip(); software=str(d.get('software','paper')).lower()
     mem=int(d.get('memory',2)); cpu_limit=int(d.get('cpuLimit',0)); port=int(d.get('port',25565))
     supported=('paper','purpur','folia','spigot','velocity','waterfall','fabric','vanilla')
@@ -546,7 +548,9 @@ def create(d):
     if any(s['name'].lower()==name.lower() or s['port']==port for s in servers()): raise ValueError('Name or port already used')
     sid=secrets.token_hex(4); folder=safe_dir(sid); folder.mkdir(mode=0o750)
     try:
+        if progress: progress("Downloading "+software.title()+" "+ver+" server software…")
         download_server_jar(software,ver,folder/'server.jar')
+        if progress: progress("Download complete. Preparing server files…")
         if software not in ('velocity','waterfall'): (folder/'eula.txt').write_text('eula=true\n')
         if software not in ('velocity','waterfall'): (folder/'server.properties').write_text('server-port='+str(port)+'\n')
         (folder/'omcp.json').write_text(json.dumps({'name':name,'version':ver,'software':software,'memory':mem,'cpuLimit':cpu_limit,'port':port,'serverType':'proxy' if software in ('velocity','waterfall') else 'game'},indent=2))
@@ -638,6 +642,39 @@ def download_server_jar(software, ver, destination):
         if digest!=expected_sha256:
             destination.unlink(missing_ok=True)
             raise ValueError('Server JAR SHA-256 verification failed; retry the installation.')
+
+
+def _update_creation_job(job_id, **changes):
+    with CREATION_JOBS_LOCK:
+        job=CREATION_JOBS.get(job_id)
+        if job is not None: job.update(changes)
+
+def start_server_creation(data, username):
+    now=time.time()
+    job_id=secrets.token_hex(8)
+    with CREATION_JOBS_LOCK:
+        for key,value in list(CREATION_JOBS.items()):
+            if value.get("status") in ("complete","failed") and now-value.get("created",now)>3600:
+                CREATION_JOBS.pop(key,None)
+        if len(CREATION_JOBS)>=100:
+            raise ValueError("Too many server-creation jobs are active. Wait for one to finish and retry.")
+        CREATION_JOBS[job_id]={"owner":username,"status":"queued","message":"Server creation queued…","created":now}
+    def worker():
+        _update_creation_job(job_id,status="running",message="Validating server settings…")
+        try:
+            server=create(data,progress=lambda message:_update_creation_job(job_id,message=message))
+            _update_creation_job(job_id,status="complete",message="Server created successfully.",server=server)
+        except Exception as exc:
+            _update_creation_job(job_id,status="failed",message="Server creation failed.",error=str(exc)[:1200])
+    threading.Thread(target=worker,daemon=True,name="omcp-create-"+job_id).start()
+    return {"jobId":job_id,"status":"queued","message":"Server creation queued."}
+
+def read_server_creation_job(job_id, username):
+    with CREATION_JOBS_LOCK:
+        job=CREATION_JOBS.get(job_id)
+        if not job or job.get("owner")!=username:
+            raise ValueError("Server creation job not found or expired.")
+        return {key:job[key] for key in ("status","message","server","error") if key in job}
 
 VERSION_CACHE={}
 def software_versions(software):
@@ -1583,6 +1620,8 @@ class Handler(BaseHTTPRequestHandler):
                 u=load_users().get(self.username)
                 if not u: return send(self,401,{"error":"Account no longer exists"})
                 return send(self,200,{"user":{"username":self.username,"role":u.get("role","user")}})
+            creation=re.fullmatch(r"/api/server-creation/([a-f0-9]{16})",path)
+            if creation: return send(self,200,read_server_creation_job(creation.group(1),self.username))
             if path=="/api/servers": return send(self,200,{"servers":servers()})
             x=re.fullmatch(r"/api/servers/([a-f0-9]{8})/mods/search",path)
             if x:
@@ -1779,7 +1818,7 @@ class Handler(BaseHTTPRequestHandler):
                 schedules[sid]={"enabled":enabled,"interval_minutes":interval,"provider":provider,"last_run":old.get("last_run",0),"last_status":old.get("last_status","Not run yet"),"last_file_id":old.get("last_file_id","")}
                 save_backup_config(cfg)
                 return send(self,200,{"saved":True,"schedule":schedules[sid],"driveConfigured":google_drive_configured(cfg)})
-            if path=="/api/servers": return send(self,201,{"server":create(d)})
+            if path=="/api/servers": return send(self,202,start_server_creation(d,self.username))
             x=re.fullmatch(r"/api/servers/([a-f0-9]{8})/properties",path)
             if x: return send(self,200,{"saved":True,"properties":write_server_properties(x.group(1),d.get("properties",{})),"apply":"restart"})
             x=re.fullmatch(r"/api/servers/([a-f0-9]{8})/archive",path)
