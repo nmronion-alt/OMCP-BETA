@@ -25,9 +25,19 @@ Run this command on a fresh Ubuntu/Debian Linux host with root or `sudo` access:
 curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && if [ "$(id -u)" -eq 0 ]; then bash /tmp/omcp.sh; else sudo bash /tmp/omcp.sh; fi
 ```
 
-The installer detects whether the host provides a platform `PORT` (for example, Railway). If it does, OMCP binds to `0.0.0.0:$PORT` and skips the outbound tunnl.gg dependency; open the HTTPS domain assigned by that platform. On a normal VPS without `PORT`, OMCP stays on localhost and uses tunnl.gg for the browser panel link.
+The installer detects whether the host provides a platform `PORT` (for example, Railway). If it does, OMCP binds to `0.0.0.0:$PORT` and skips the outbound tunnl.gg dependency; open the HTTPS domain assigned by that platform. On a normal VPS without `PORT`, OMCP stays on localhost and starts a Cloudflare Quick Tunnel, then prints its temporary HTTPS panel URL.
 
 > **Compatibility:** The installer currently targets Debian/Ubuntu with `apt-get` and root access. It supports hosts without systemd, but a host must allow long-running processes, provide persistent storage for `/var/lib/omcp`, and permit the required outbound downloads. A platform's generated web domain exposes only the panel's HTTP(S) traffic; Minecraft player connections still need a separate TCP relay. Temporary or sleep-prone free tiers may stop the panel or server.
+
+### 🧪 Test this Beta fix branch
+
+To test the updated Beta installer without changing the main branch:
+
+```bash
+curl -fL --retry 3 --retry-all-errors https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/fix/beta-fetch-console-tunnel/install-omcp.sh -o /tmp/omcp-beta-test.sh && if [ "$(id -u)" -eq 0 ]; then bash /tmp/omcp-beta-test.sh; else sudo bash /tmp/omcp-beta-test.sh; fi
+```
+
+On a normal VPS, the installer prints `OMCP PANEL URL: https://....trycloudflare.com`. This is a temporary Quick Tunnel URL; a named Cloudflare Tunnel is needed for a permanent hostname.
 
 ## ✨ What is OMCP?
 
@@ -76,7 +86,7 @@ Feature availability depends on the selected Minecraft software, version, host e
 
 - Debian or Ubuntu Linux host/container (`apt-get`)
 - Root or `sudo` access
-- A platform-provided `PORT` for direct platform ingress, or outbound SSH access for the optional tunnl.gg panel tunnel
+- A platform-provided `PORT` for direct platform ingress, or outbound HTTPS access for the Cloudflare Quick Tunnel
 - Internet connection for installation and downloads
 - A persistent host for long-running use
 
