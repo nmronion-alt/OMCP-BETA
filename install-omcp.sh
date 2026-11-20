@@ -26,6 +26,11 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-paramiko git curl ca-certificates openjdk-21-jre-headless openssh-client
 DEBIAN_FRONTEND=noninteractive apt-get install -y cpulimit >/dev/null 2>&1 || true
 
+# Create the application paths and service account before writing helper scripts.
+id omcp >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --create-home --shell /usr/sbin/nologin omcp
+install -d -o root -g omcp -m 0750 "$APP"
+install -d -o omcp -g omcp -m 0750 "$DATA" "$DATA/servers" "$DATA/backups"
+
 # Cloudflare Quick Tunnel provides a browser-ready HTTPS URL without a token.
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
@@ -59,10 +64,7 @@ chown root:omcp "$APP/omcp-tunnel.sh"
 # Open the dedicated SFTP listener in UFW when UFW is already active. Cloud firewalls need a separate rule.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 2022/tcp || true; fi
 
-# tunnl.gg uses the system OpenSSH client and does not require a Cloudflare account.
-id omcp >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --create-home --shell /usr/sbin/nologin omcp
-install -d -o root -g omcp -m 0750 "$APP"
-install -d -o omcp -g omcp -m 0750 "$DATA" "$DATA/servers" "$DATA/backups"
+# Service account and directories were created before tunnel helper installation.
 cat >"$DATA/omcp.env" <<ENV
 OMCP_HOST=$PANEL_HOST
 OMCP_PORT=$PANEL_PORT
@@ -155,8 +157,11 @@ UNIT
   if [[ "$PLATFORM_MODE" == "1" ]]; then
     echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
   else
-    sleep 5
-    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[^[:space:]]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
+    for _ in {1..45}; do
+      PANEL_URL="$(journalctl -u omcp-tunnel -n 200 --no-pager 2>/dev/null | grep -Eo 'https://[A-Za-z0-9._-]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
+      [[ -n "$PANEL_URL" ]] && break
+      sleep 2
+    done
     if [[ -n "$PANEL_URL" ]]; then echo "OMCP PANEL URL: $PANEL_URL"; else echo "Tunnel is still connecting. Check: sudo journalctl -u omcp-tunnel -n 80 --no-pager"; fi
   fi
 else
@@ -187,7 +192,7 @@ else
     fi
     runuser -u omcp -- sh -c 'nohup /opt/omcp/omcp-tunnel.sh "$1" /var/lib/omcp/tunnel.log </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
     PANEL_URL=""
-    for _ in {1..60}; do
+    for _ in {1..90}; do
       PANEL_URL="$(grep -Eo 'https://[^[:space:]]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
       [[ -n "$PANEL_URL" ]] && break
       sleep 2
