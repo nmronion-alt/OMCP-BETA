@@ -193,7 +193,7 @@ else
     runuser -u omcp -- sh -c 'nohup /opt/omcp/omcp-tunnel.sh "$1" /var/lib/omcp/tunnel.log </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
     PANEL_URL=""
     for _ in {1..90}; do
-      PANEL_URL="$(grep -Eo 'https://[^[:space:]]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
+      PANEL_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' "$DATA/tunnel.log" 2>/dev/null | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
       [[ -n "$PANEL_URL" ]] && break
       sleep 2
     done
