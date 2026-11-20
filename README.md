@@ -22,7 +22,7 @@
 Run this command on a fresh Ubuntu/Debian Linux host with root or `sudo` access:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/main/install-omcp.sh -o /tmp/omcp.sh && if [ "$(id -u)" -eq 0 ]; then bash /tmp/omcp.sh; else sudo bash /tmp/omcp.sh; fi
+curl -fsSL https://raw.githubusercontent.com/nmronion-alt/OMCP-BETA/fix/beta-cloudshell-create/install-omcp.sh -o /tmp/omcp.sh && if [ "$(id -u)" -eq 0 ]; then bash /tmp/omcp.sh; else sudo bash /tmp/omcp.sh; fi
 ```
 
 The installer detects whether the host provides a platform `PORT` (for example, Railway). If it does, OMCP binds to `0.0.0.0:$PORT` and skips the outbound tunnl.gg dependency; open the HTTPS domain assigned by that platform. On a normal VPS without `PORT`, OMCP stays on localhost and uses tunnl.gg for the browser panel link.
