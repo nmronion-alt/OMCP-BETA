@@ -629,7 +629,7 @@ def download_server_jar(software, ver, destination):
         url=meta.get('downloads',{}).get('server',{}).get('url')
         if not url: raise ValueError('No official Vanilla server download for '+ver)
     else: raise ValueError('Unsupported server software')
-    _omcp_download(url,destination,headers,300)
+    if software!='spigot': _omcp_download(url,destination,headers,300)
     if destination.stat().st_size<100000 or not zipfile.is_zipfile(destination):
         destination.unlink(missing_ok=True)
         raise ValueError('Downloaded server software failed JAR validation: response was not a valid JAR/ZIP file')
