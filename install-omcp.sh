@@ -156,7 +156,7 @@ UNIT
     echo "Platform ingress: open the service's assigned HTTPS domain (PORT=$PANEL_PORT)."
   else
     sleep 5
-    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[^[:space:]]+' | tail -n 1 || true)"
+    PANEL_URL="$(journalctl -u omcp-tunnel -n 80 --no-pager 2>/dev/null | grep -Eo 'https://[^[:space:]]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' | tail -n 1 || true)"
     if [[ -n "$PANEL_URL" ]]; then echo "OMCP PANEL URL: $PANEL_URL"; else echo "Tunnel is still connecting. Check: sudo journalctl -u omcp-tunnel -n 80 --no-pager"; fi
   fi
 else
@@ -188,7 +188,7 @@ else
     runuser -u omcp -- sh -c 'nohup /opt/omcp/omcp-tunnel.sh "$1" /var/lib/omcp/tunnel.log </dev/null >>/var/lib/omcp/tunnel.log 2>&1 & echo $! >/var/lib/omcp/tunnel.pid' sh "$PANEL_PORT"
     PANEL_URL=""
     for _ in {1..60}; do
-      PANEL_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
+      PANEL_URL="$(grep -Eo 'https://[^[:space:]]+' | grep -E 'trycloudflare\.com|localhost\.run|lhr\.life|pinggy\.link' "$DATA/tunnel.log" 2>/dev/null | tail -n 1 || true)"
       [[ -n "$PANEL_URL" ]] && break
       sleep 2
     done
