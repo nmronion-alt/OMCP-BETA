@@ -1,0 +1,43 @@
+name: Package OMCP Library Backup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backups/OMCP-PANEL-main/**"
+      - ".github/workflows/package-library-backup.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  package-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the original ZIP layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d backups/OMCP-PANEL-main
+          mkdir -p backups
+          rm -f backups/OMCP-PANEL-main.zip
+          zip -qr backups/OMCP-PANEL-main.zip backups/OMCP-PANEL-main
+          sha256sum backups/OMCP-PANEL-main.zip | tee backups/OMCP-PANEL-main.zip.sha256
+      - name: Commit generated ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backups/OMCP-PANEL-main.zip backups/OMCP-PANEL-main.zip.sha256
+          if git diff --cached --quiet; then
+            echo "Backup ZIP is already up to date."
+            exit 0
+          fi
+          git commit -m "Add OMCP Panel Library backup ZIP"
+          git push
